@@ -1,0 +1,17 @@
+# --- Core Application & Web ---
+fastapi[all]         # FastAPI 프레임워크 및 관련 의존성 (UploadFile, starlette 등 포함)
+
+# --- AI & Machine Learning ---
+openai               # OpenAI API (GPT-4o 등) 사용
+torch                # PyTorch: 딥러닝 프레임워크
+transformers         # Hugging Face 모델(Whisper 등) 사용
+openai-whisper       # OpenAI의 원본 Whisper 라이브러리 (언어 감지용으로 사용)
+
+# --- Audio Processing ---
+soundfile            # WAV 등 오디오 파일 읽기/쓰기
+pydub                # m4a, mp3 등 다양한 오디오 포맷 처리 (ffmpeg 필요)
+
+# --- Utilities ---
+numpy                # 수치 연산, 오디오 데이터 배열 처리
+pycountry            # ISO 언어 코드 변환
+python-dotenv        # .env 파일에서 환경 변수 로드
