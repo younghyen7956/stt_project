@@ -2,17 +2,45 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from enum import Enum
 from fastapi import Query
 from stt_project.service.stt_service_impl import SttServiceImpl
+import os
 
 SttRouter = APIRouter()
 
 def injectService() -> SttServiceImpl:
     return SttServiceImpl.getInstance()
 
-class SttModel(str, Enum):
-    # 사용자가 정의한 모델명 유지
-    medium = "openai/whisper-medium"
-    large_v3_turbo = "openai/whisper-large-v3-turbo" # 모델 이름은 .env와 일치시키는 것이 좋습니다.
-# --- ▼▼▼ 라우터 코드 수정 시작 ▼▼▼ ---
+allowed_stt_models_str = os.getenv("STTMODELS", "")
+# 쉼표로 분리된 문자열을 리스트로 변환하고, 공백을 제거합니다.
+allowed_stt_models = [
+    model.strip() for model in allowed_stt_models_str.split(',') if model.strip()
+]
+
+# SttModel Enum을 동적으로 생성합니다.
+# Enum 멤버의 이름은 모델 경로의 마지막 부분을 대문자로 변환하여 사용합니다.
+# 예: "openai/whisper-medium" -> MEDIUM
+# 예: "openai/whisper-large-v3-turbo" -> LARGE_V3_TURBO
+# 예: "openai/whisper-large-v3" -> LARGE_V3
+stt_model_enum_members = {}
+if not allowed_stt_models:
+    # 환경 변수가 비어 있거나 설정되지 않은 경우, 기본 모델을 포함합니다.
+    # 이 부분은 프로젝트의 정책에 따라 조정할 수 있습니다.
+    print("경고: STTMODELS 환경 변수가 설정되지 않았습니다. 기본 STT 모델(large-v3-turbo)을 사용합니다.")
+    stt_model_enum_members["large_v3_turbo"] = "openai/whisper-large-v3-turbo"
+else:
+    for model_path in allowed_stt_models:
+        # 모델 경로에서 마지막 부분을 추출하여 Enum 멤버 이름으로 사용
+        # 예: "openai/whisper-medium" -> "medium"
+        # "openai/whisper-large-v3-turbo" -> "large-v3-turbo"
+        # Enum 멤버 이름은 유효한 Python 식별자여야 하므로, 하이픈을 언더스코어로 변환합니다.
+        member_name = model_path.split('/')[-1].replace('-', '_').upper()
+        # 이미 존재하는 이름인지 확인 (중복 방지)
+        if member_name in stt_model_enum_members:
+            # 중복된 이름이 있다면 모델 경로를 포함하여 이름을 더 구체적으로 만듭니다.
+            member_name = f"{member_name}_{len(stt_model_enum_members)}"
+        stt_model_enum_members[member_name] = model_path
+
+# type()을 사용하여 SttModel Enum을 동적으로 생성합니다.
+SttModel = Enum("SttModel", stt_model_enum_members)
 
 @SttRouter.post(
     "/transcribe",
@@ -26,7 +54,7 @@ class SttModel(str, Enum):
 )
 async def transcribe_audio_endpoint(
         model: SttModel = Query(
-            default=SttModel.large_v3_turbo,
+            default=list(SttModel.__members__.values())[0] if SttModel.__members__ else None,
             description="사용할 STT 모델을 선택합니다."
         ),
         audio_file: UploadFile = File(..., description="변환할 오디오 파일 (예: .wav, .mp3, .m4a)"),

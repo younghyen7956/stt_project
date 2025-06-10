@@ -17,7 +17,6 @@ import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 from stt_project.repository.stt_repository import SttRepository
 
-
 class SttRepositoryImpl(SttRepository):
     __instance = None
     load_dotenv()
@@ -115,9 +114,6 @@ class SttRepositoryImpl(SttRepository):
         except Exception as e:
             print(f"❌ OpenAI GPT 번역 중 오류 발생: {e}")
             return f"GPT 번역 오류: {e}"
-
-    # --- Approach B 관련 함수 제거 ---
-    # def generate_korean_response_and_translate_sync(self, ...):
 
     def generate_llm_response_sync(self, text_input: str, original_language_code: str) -> dict:
         default_answers = {"answer_original_language": "답변 생성 실패", "answer_korean": "답변 생성 실패"}
