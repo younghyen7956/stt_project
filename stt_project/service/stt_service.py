@@ -6,7 +6,3 @@ class SttService(ABC):
     @abstractmethod
     def transcription(self,Uploadfile: UploadFile,model_name):
         pass
-
-    @abstractmethod
-    def translation(self, Uploadfile: UploadFile):
-        pass

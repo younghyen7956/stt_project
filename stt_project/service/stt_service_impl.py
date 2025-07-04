@@ -1,6 +1,6 @@
 from fastapi import UploadFile
 
-from stt_project.repository.stt_repository_impl import SttRepositoryImpl
+from stt_project.repository.stt_repository_impl_kokoro import SttRepositoryImpl
 from stt_project.service.stt_service import SttService
 
 
@@ -32,10 +32,6 @@ class SttServiceImpl(SttService):
     async def transcription(self,Uploadfile: UploadFile,model_name):
         audio_transcription = await self.stt_repository.transcription(Uploadfile,model_name)
         return audio_transcription
-
-    async def translation(self, Uploadfile: UploadFile) -> dict:
-        audio_translation = await self.stt_repository.translation(Uploadfile)
-        return audio_translation
 
 
 

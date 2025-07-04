@@ -1,18 +1,16 @@
-import os, pycountry
+import base64
+
+import pandas as pd
 from pydub import AudioSegment
-import openai, json
-import torch
 from dotenv import load_dotenv
 from fastapi import UploadFile
 from starlette.concurrency import run_in_threadpool
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor,AutoModel
 from transformers import pipeline
-import whisper
 import soundfile as sf
 import numpy as np
-import io
+import io,ssl,whisper,torch,openai, json,os,pycountry,random
 from typing import Optional, Dict, Any
-import ssl
 
 ssl._create_default_https_context = ssl._create_unverified_context
 from stt_project.repository.stt_repository import SttRepository
@@ -46,6 +44,8 @@ class SttRepositoryImpl(SttRepository):
         self.pipelines = {}
         self.gpt_model = None
         self.whisper_detection_model = None
+        self.bark_processor = None
+        self.bark_model = None
         self.get_model()
         print("--- SttRepositoryImpl: __init__ 최초 초기화 완료 ---")
 
@@ -85,6 +85,21 @@ class SttRepositoryImpl(SttRepository):
             print("✅ (언어 감지용) Whisper 모델 (base) 로드 완료.")
         except Exception as e:
             print(f"❌ (언어 감지용) Whisper 모델 로드 중 오류: {e}")
+
+        print("\n--- Bark TTS 모델 (suno/bark-small) 로드 시작 ---")
+        try:
+            self.bark_processor = AutoProcessor.from_pretrained("suno/bark-small")
+            self.bark_model = AutoModel.from_pretrained("suno/bark-small", torch_dtype=torch.float32).to(self.device)
+            # 'eager' 모드에서도 torch.compile은 여전히 매우 효과적입니다.
+            if hasattr(torch, 'compile'):
+                print("PyTorch 2.0+ 감지됨. Bark 모델에 torch.compile을 적용합니다...")
+                self.bark_model = torch.compile(self.bark_model)
+                print("✅ torch.compile 적용 완료.")
+            print("✅ Bark TTS 모델 및 프로세서 로드 완료.")
+        except Exception as e:
+            print(f"❌ Bark TTS 모델 로드 중 오류: {e}")
+            self.bark_processor = None
+            self.bark_model = None
 
         print("--- SttRepositoryImpl: get_model successfully ---")
 
@@ -197,12 +212,75 @@ class SttRepositoryImpl(SttRepository):
             print(f"❌ GPT 답변 생성 또는 번역 중 오류 발생: {e}")
             return default_answers
 
+    def generate_speech_sync(self, text: str, lang_code: str) -> Optional[bytes]:
+        if not self.bark_processor or not self.bark_model:
+            print("⚠️ Bark 모델이 로드되지 않아 TTS 생성을 건너뜁니다.")
+            return None
+        if not text or not text.strip():
+            return None
+
+        try:
+            # 1. Pandas로 Excel 파일 읽기
+            file_path = "/Users/gim-yonghyeon/Downloads/bark.xlsx"  # 사용자가 지정한 경로
+            df = pd.read_excel(file_path)
+
+            # 2. 주어진 lang_code에 해당하는 프리셋 목록 필터링
+            available_presets = df[df['lang_code'] == lang_code]['Prompt name'].tolist()
+
+            if available_presets:
+                # 3-1. 해당 언어의 프리셋이 있으면, 그 중 하나를 랜덤으로 선택
+                voice_preset = random.choice(available_presets)
+            else:
+                print(f"⚠️ 언어 '{lang_code}'에 대한 Voice Preset을 찾을 수 없어 영어 기본값으로 대체합니다.")
+                english_presets = df[df['lang_code'] == 'en']['Prompt name'].tolist()
+                if english_presets:
+                    voice_preset = 'en_speaker_6'  # 특정 영어 프리셋을 지정하거나
+                else:
+                    # 엑셀에 영어 프리셋조차 없을 경우를 대비한 최후의 기본값
+                    voice_preset = 'en_speaker_0'
+
+        except FileNotFoundError:
+            print(f"❌ Voice Preset 파일 '{file_path}'을 찾을 수 없습니다. 기본 프리셋으로 진행합니다.")
+            voice_preset = 'en_speaker_6'  # 파일을 못찾을 경우 기본값
+        except Exception as e:
+            print(f"❌ Voice Preset 처리 중 오류 발생: {e}. 기본 프리셋으로 진행합니다.")
+            voice_preset = 'en_speaker_6'  # 그 외 오류 발생 시 기본값
+
+        print(f"\n--- 🔊 TTS 생성 시작 (언어: {lang_code}, 프리셋: {voice_preset}) ---")
+        try:
+            inputs = self.bark_processor(text, voice_preset=voice_preset, return_tensors="pt")
+
+            # 입력 텐서를 모델과 동일한 장치로 이동
+            inputs = {k: v.to(self.bark_model.device) for k, v in inputs.items()}
+
+            # 음성 생성 (do_sample=True는 더 자연스러운 결과를 위함)
+            speech_values = self.bark_model.generate(**inputs, do_sample=True, fine_temperature=0.4,
+                                                     coarse_temperature=0.8)
+
+            sampling_rate = self.bark_model.generation_config.sample_rate
+            audio_array = speech_values.cpu().numpy().squeeze()
+
+            # 메모리 내에서 WAV 포맷으로 변환
+            buffer = io.BytesIO()
+            sf.write(buffer, audio_array, sampling_rate, format='WAV')
+            buffer.seek(0)
+            audio_bytes = buffer.read()
+
+            print("✅ TTS 음성 생성 완료.")
+            return audio_bytes
+
+        except Exception as e:
+            print(f"❌ Bark TTS 생성 중 오류 발생: {e}")
+            return None
+
     async def transcription(self, audio_file: UploadFile, model_name: str) -> Dict[str, Any]:
         # --- ▼▼▼ 최종 출력 형식에 맞게 default_response 수정 ▼▼▼ ---
         default_response = {
             "text": "", "language_code": "unknown", "language_name": "Unknown",
             "language_probability": 0.0, "original_query": "", "korean_query": "",
-            "original_language_answer": "", "korean_answer": ""
+            "original_language_answer": "", "korean_answer": "",
+            "korean_answer_audio_base64": None,
+            "original_language_answer_audio_base64": None
         }
 
         try:
@@ -278,18 +356,35 @@ class SttRepositoryImpl(SttRepository):
             if transcribed_text and language_info['code'] != 'unknown':
                 llm_answers = await run_in_threadpool(self.generate_llm_response_sync, transcribed_text,
                                                       language_info['code'])
+            korean_audio_base64 = None
+            original_audio_base64 = None
 
-            # --- ▼▼▼ 요청하신 최종 형태로 응답 구성 ▼▼▼ ---
+            # 1. 한국어 답변 음성 생성
+            korean_answer_text = llm_answers.get("answer_korean")
+            if korean_answer_text and korean_answer_text not in ["미실행", "답변 생성 실패"]:
+                korean_audio_bytes = await run_in_threadpool(self.generate_speech_sync, korean_answer_text, 'ko')
+                if korean_audio_bytes:
+                    korean_audio_base64 = base64.b64encode(korean_audio_bytes).decode('utf-8')
+
+            original_answer_text = llm_answers.get("answer_original_language")
+            if original_answer_text and original_answer_text not in ["미실행", "답변 생성 실패"]:
+                original_audio_bytes = await run_in_threadpool(self.generate_speech_sync, original_answer_text,
+                                                               language_info['code'])
+                if original_audio_bytes:
+                    original_audio_base64 = base64.b64encode(original_audio_bytes).decode('utf-8')
+
             final_response = {
                 "original_query": transcribed_text,
                 "language_code": language_info['code'],
                 "language_name": language_info['name'],
                 "language_probability": language_info['probability'],
                 "korean_query": translated_question_korean,
-                "original_language_answer": llm_answers['answer_original_language'],
-                "korean_answer": llm_answers['answer_korean']
+                "original_language_answer": llm_answers.get("answer_original_language"),
+                "korean_answer": llm_answers.get("answer_korean"),
+                "korean_answer_audio_base64": korean_audio_base64,
+                "original_language_answer_audio_base64": original_audio_base64
             }
-            print(f"\n✅ 최종 응답 준비 완료.")
+            print(f"\n✅ 최종 응답 준비 완료 (음성 포함).")
             return final_response
 
         except Exception as e:
