@@ -4,5 +4,5 @@ from fastapi import UploadFile
 
 class SttService(ABC):
     @abstractmethod
-    def transcription(self,Uploadfile: UploadFile,model_name):
+    async def transcription(self, Uploadfile: UploadFile, model_name: str, enable_translation: bool):
         pass

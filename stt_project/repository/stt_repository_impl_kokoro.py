@@ -11,6 +11,7 @@ import numpy as np
 import io, ssl, whisper, torch, openai, json, os, pycountry, random, re
 from typing import Optional, Dict, Any
 from kokoro import KPipeline
+import time
 
 ssl._create_default_https_context = ssl._create_unverified_context
 from stt_project.repository.stt_repository import SttRepository
@@ -89,9 +90,23 @@ class SttRepositoryImpl(SttRepository):
         except Exception as e:
             print(f"❌ (언어 감지용) Whisper 모델 로드 중 오류: {e}")
 
-        print("--- Kokoro TTS 설정 완료 (필요시 동적 로드) ---")
-        if not KPipeline:
-            print("⚠️ Kokoro 라이브러리가 없어 Kokoro TTS 모델을 로드할 수 없습니다.")
+        log_lang_map = {
+            'a': 'English', 'b': 'Brazilian Portuguese', 'e': 'Spanish', 'f': 'French',
+            'h': 'Hindi', 'i': 'Italian', 'j': 'Japanese', 'p': 'Portuguese', 'z': 'Chinese'
+        }
+
+        # KOKORO_SUPPORTED_LANGS 리스트에 있는 모든 언어 모델을 로드합니다.
+        for kokoro_char in KOKORO_SUPPORTED_LANGS:
+            if kokoro_char not in self.kokoro_tts_pipelines:
+                try:
+                    lang_name_for_log = log_lang_map.get(kokoro_char, f"Unknown ({kokoro_char})")
+                    print(f"  - '{lang_name_for_log}' 모델 로드 중...")
+                    self.kokoro_tts_pipelines[kokoro_char] = KPipeline(lang_code=kokoro_char)
+                    print(f"  ✅ '{lang_name_for_log}' 모델 로드 완료.")
+                except Exception as e:
+                    print(f"  ❌ '{lang_name_for_log}' 모델 로드 실패: {e}")
+
+        print("--- ✅ 모든 TTS 모델 미리 로드 완료 ---")
         print("--- SttRepositoryImpl: get_model successfully ---")
 
     def _clean_text_for_speech(self, text: str) -> str:
@@ -118,7 +133,8 @@ class SttRepositoryImpl(SttRepository):
             print(f"❌ OpenAI GPT 번역 중 오류: {e}")
             return f"GPT 번역 오류: {e}"
 
-    def generate_llm_response_sync(self, text_input: str, original_language_code: str) -> dict:
+    def generate_llm_response_sync(self, text_input: str, original_language_code: str,
+                                   enable_translation: bool = False) -> dict:
         default_answers = {"answer_original_language": "답변 생성 실패", "answer_korean": "답변 생성 실패"}
         if not self.gpt_model:
             default_answers["answer_original_language"] = "OpenAI API 사용 불가"
@@ -153,9 +169,15 @@ class SttRepositoryImpl(SttRepository):
             {"role": "user", "content": text_input}
         ]
         try:
-            completion = self.gpt_model.chat.completions.create(model="gpt-4o", messages=messages, temperature=0.7)
+            completion = self.gpt_model.chat.completions.create(model="gpt-4o-mini", messages=messages, temperature=0.7)
             original_language_answer = completion.choices[0].message.content.strip()
-            korean_answer = self.universal_translation_sync(original_language_answer, original_lang_name_en, "Korean")
+
+            korean_answer = "번역 비활성화됨"
+            if enable_translation:
+                print("  - LLM 답변 한국어 번역 중...")
+                korean_answer = self.universal_translation_sync(original_language_answer, original_lang_name_en,
+                                                                "Korean")
+
             return {"answer_original_language": original_language_answer, "answer_korean": korean_answer}
         except Exception as e:
             print(f"❌ OpenAI GPT 답변 생성/번역 중 오류: {e}")
@@ -215,7 +237,12 @@ class SttRepositoryImpl(SttRepository):
             traceback.print_exc()
             return None
 
-    async def transcription(self, audio_file: UploadFile, model_name: str) -> Dict[str, Any]:
+    async def transcription(self, audio_file: UploadFile, model_name: str, enable_translation: bool = False) -> Dict[
+        str, Any]:
+        start_time = time.time()
+        last_step_time = start_time
+        print(f"\n--- 🚀 새로운 요청 처리 시작 (번역 활성화: {enable_translation}) 🚀 ---")
+
         default_response = {"text": "", "language_code": "unknown", "language_name": "Unknown",
                             "language_probability": 0.0, "original_query": "", "korean_query": "",
                             "original_language_answer": "", "korean_answer": "", "korean_answer_audio_base64": None,
@@ -241,6 +268,10 @@ class SttRepositoryImpl(SttRepository):
             if audio_array.ndim > 1: audio_array = np.mean(audio_array, axis=1)
             loaded_audio_sample = {"array": audio_array.astype(np.float32), "sampling_rate": sampling_rate}
 
+            current_time = time.time()
+            print(f"⏱️  [1/7] 오디오 파일 처리 완료: {current_time - last_step_time:.2f}초")
+            last_step_time = current_time
+
             language_info = {"code": "unknown", "name": "Unknown", "probability": 0.0}
             if self.whisper_detection_model:
                 try:
@@ -256,31 +287,63 @@ class SttRepositoryImpl(SttRepository):
                 except Exception as e:
                     print(f"⚠️ 언어 감지 중 오류: {e}")
 
+            current_time = time.time()
+            print(f"⏱️  [2/7] 언어 감지 완료: {current_time - last_step_time:.2f}초")
+            last_step_time = current_time
+
             generate_kwargs = {"language": language_info['code']} if language_info['code'] != 'unknown' else {}
             result = await run_in_threadpool(target_pipe, loaded_audio_sample.copy(), generate_kwargs=generate_kwargs)
             transcribed_text = result.get("text", "").strip()
 
-            translated_question_korean = ""
-            if transcribed_text and language_info['code'] != 'ko':
-                translated_question_korean = await run_in_threadpool(self.universal_translation_sync, transcribed_text,
-                                                                     language_info['name'], "Korean")
-            elif language_info['code'] == 'ko':
-                translated_question_korean = transcribed_text
+            current_time = time.time()
+            print(f"⏱️  [3/7] STT (음성->텍스트) 변환 완료: {current_time - last_step_time:.2f}초")
+            last_step_time = current_time
+
+            translated_question_korean = "번역 비활성화됨"
+            if enable_translation:
+                if transcribed_text and language_info['code'] != 'ko':
+                    translated_question_korean = await run_in_threadpool(self.universal_translation_sync,
+                                                                         transcribed_text,
+                                                                         language_info['name'], "Korean")
+                elif language_info['code'] == 'ko':
+                    translated_question_korean = transcribed_text
+            else:
+                if language_info['code'] == 'ko':
+                    translated_question_korean = transcribed_text
+
+            current_time = time.time()
+            if enable_translation:
+                print(f"⏱️  [4/7] 질문 번역 완료: {current_time - last_step_time:.2f}초")
+            else:
+                print(f"⏱️  [4/7] 질문 번역 건너뜀.")
+            last_step_time = current_time
 
             llm_answers = {"answer_original_language": "미실행", "answer_korean": "미실행"}
             if transcribed_text and language_info['code'] != 'unknown':
                 llm_answers = await run_in_threadpool(self.generate_llm_response_sync, transcribed_text,
-                                                      language_info['code'])
+                                                      language_info['code'], enable_translation)
+
+            current_time = time.time()
+            print(f"⏱️  [5/7] LLM 답변 생성 완료: {current_time - last_step_time:.2f}초")
+            last_step_time = current_time
+
+            cleaned_original_answer = self._clean_text_for_speech(llm_answers.get("answer_original_language", ""))
+            cleaned_korean_answer = self._clean_text_for_speech(llm_answers.get("answer_korean", ""))
+
+            current_time = time.time()
+            print(f"⏱️  [6/7] 텍스트 정제 완료: {current_time - last_step_time:.2f}초")
+            last_step_time = current_time
 
             original_audio_base64 = None
-            original_answer_text = llm_answers.get("answer_original_language")
-            if original_answer_text and original_answer_text not in ["미실행", "답변 생성 실패"] and language_info[
-                'code'] != 'ko':
-                cleaned_text_for_tts = self._clean_text_for_speech(original_answer_text)
-                original_audio_bytes = await run_in_threadpool(self.generate_speech_sync, cleaned_text_for_tts,
+            if cleaned_original_answer and language_info['code'] != 'ko':
+                original_audio_bytes = await run_in_threadpool(self.generate_speech_sync, cleaned_original_answer,
                                                                language_info['code'])
                 if original_audio_bytes:
                     original_audio_base64 = base64.b64encode(original_audio_bytes).decode('utf-8')
+
+            current_time = time.time()
+            print(f"⏱️  [7/7] TTS (텍스트->음성) 생성 완료: {current_time - last_step_time:.2f}초")
+            last_step_time = current_time
 
             final_response = {
                 "original_query": transcribed_text,
@@ -288,14 +351,19 @@ class SttRepositoryImpl(SttRepository):
                 "language_name": language_info['name'],
                 "language_probability": language_info['probability'],
                 "korean_query": translated_question_korean,
-                "original_language_answer": llm_answers.get("answer_original_language"),
-                "korean_answer": llm_answers.get("answer_korean"),
+                "original_language_answer": cleaned_original_answer,
+                "korean_answer": cleaned_korean_answer,
                 "korean_answer_audio_base64": None,
                 "original_language_answer_audio_base64": original_audio_base64
             }
+
+            total_time = time.time() - start_time
+            print(f"✅ --- 요청 처리 성공! (총 소요 시간: {total_time:.2f}초) --- ✅")
             return final_response
 
         except Exception as e:
             import traceback
             traceback.print_exc()
+            total_time = time.time() - start_time
+            print(f"❌ --- 오류 발생! (총 소요 시간: {total_time:.2f}초) --- ❌")
             return {**default_response, "error": "TranscriptionProcessError", "message": f"음성 인식 처리 중 오류: {e}"}

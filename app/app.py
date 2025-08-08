@@ -26,11 +26,10 @@ async def lifespan(app: FastAPI):
 # [수정] FastAPI 앱 생성 시 lifespan 연결
 app = FastAPI(debug=True, lifespan=lifespan)
 
-# CORS 설정은 그대로 유지
-origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

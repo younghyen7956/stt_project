@@ -16,11 +16,13 @@ class SttServiceImpl(SttService):
 
     def __init__(self):
         if not hasattr(self, '_initialized_service'): # 서비스 초기화 플래그
-            print("--- RAGServiceImpl: __init__ 최초 초기화 ---")
+            # ⭐️ 클래스 이름에 맞게 프린트 로그 수정
+            print("--- SttServiceImpl: __init__ 최초 초기화 ---")
             self.stt_repository = SttRepositoryImpl.getInstance() # 레포지토리 인스턴스 생성 및 저장
             self._initialized_service = True
         else:
-            print("--- RAGServiceImpl: __init__ (이미 초기화됨) ---")
+            # ⭐️ 클래스 이름에 맞게 프린트 로그 수정
+            print("--- SttServiceImpl: __init__ (이미 초기화됨) ---")
 
 
     @classmethod
@@ -29,9 +31,11 @@ class SttServiceImpl(SttService):
             cls.__instance = cls() # __new__ 와 __init__ 호출
         return cls.__instance
 
-    async def transcription(self,Uploadfile: UploadFile,model_name):
-        audio_transcription = await self.stt_repository.transcription(Uploadfile,model_name)
+    # ⭐️ enable_translation 파라미터를 추가하고 repository로 전달합니다.
+    async def transcription(self, Uploadfile: UploadFile, model_name: str, enable_translation: bool):
+        audio_transcription = await self.stt_repository.transcription(
+            audio_file=Uploadfile,
+            model_name=model_name,
+            enable_translation=enable_translation
+        )
         return audio_transcription
-
-
-
