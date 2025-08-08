@@ -11,3 +11,7 @@ class SttRepository(ABC):
     @abstractmethod
     def transcription(self, audio_file: UploadFile,model_name):
         pass
+
+    @abstractmethod
+    def get_model_list(self):
+        pass

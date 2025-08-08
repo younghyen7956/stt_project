@@ -102,3 +102,7 @@ async def transcribe_audio_endpoint(
         import traceback
         print(f"컨트롤러 [/transcribe]: 예상치 못한 심각한 오류 발생 - {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="서버 내부 오류 발생")
+
+@SttRouter.get("/models")
+def get_models(stt_service: SttServiceImpl = Depends(injectService)):
+    return stt_service.get_model_list()

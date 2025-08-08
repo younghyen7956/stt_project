@@ -39,3 +39,7 @@ class SttServiceImpl(SttService):
             enable_translation=enable_translation
         )
         return audio_transcription
+
+    def get_model_list(self):
+        return self.stt_repository.get_model_list()
+

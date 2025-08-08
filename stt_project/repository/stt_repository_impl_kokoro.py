@@ -50,6 +50,7 @@ class SttRepositoryImpl(SttRepository):
         else:
             self.device, self.torch_dtype = torch.device("cpu"), torch.float16
 
+        self.model_list = []
         self.pipelines = {}
         self.gpt_model = None
         self.whisper_detection_model = None
@@ -60,8 +61,8 @@ class SttRepositoryImpl(SttRepository):
 
     def get_model(self):
         model_names_str = os.getenv("STTMODELS", "openai/whisper-large-v3-turbo")
-        model_names = [name.strip() for name in model_names_str.split(',') if name.strip()]
-        for model_name in model_names:
+        self.model_list = [name.strip() for name in model_names_str.split(',') if name.strip()]
+        for model_name in self.model_list:
             try:
                 processor = AutoProcessor.from_pretrained(model_name)
                 model = AutoModelForSpeechSeq2Seq.from_pretrained(
@@ -367,3 +368,6 @@ class SttRepositoryImpl(SttRepository):
             total_time = time.time() - start_time
             print(f"❌ --- 오류 발생! (총 소요 시간: {total_time:.2f}초) --- ❌")
             return {**default_response, "error": "TranscriptionProcessError", "message": f"음성 인식 처리 중 오류: {e}"}
+
+    def get_model_list(self):
+        return self.model_list
